@@ -5,10 +5,13 @@ exports.login =
 {
 	logout: async function(data)
 	{
-		// console.log(data.i);
 		data.o['logged'] = false;
-		let session = serve_conf.check_session_by_ip_browser(data.client.ip, data.client.browser);
-		let resp = await data.mysql.query(`UPDATE users_login SET status = '0', out_date = '${tools.date.date_time_read()}' WHERE token = '${data.i.token}';`);
+		const db_session = await data.mysql.query(`SELECT uid, token FROM users_login WHERE ip = '${data.client.ip}' AND browser = '${data.client.browser}' AND status = '1' ORDER BY date_time DESC LIMIT 1`);
+		if(db_session.result.length > 0)
+		{
+			let resp = await data.mysql.query(`UPDATE users_login SET status = '0', out_date = '${tools.date.date_time_read()}' WHERE uid = '${db_session.result[0].uid}';`);
+			serve_conf.remove_session(db_session.result[0].token);
+		}
 		serve_conf.remove_session(data.i.token);
 		data.o.session = {};
 		return data.callback(data.o);

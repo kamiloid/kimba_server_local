@@ -64,6 +64,7 @@ app.post(`/${app_conf._prefix}/api`, async function(req, res)
 		let input = req.body;
 		if(input.a == null || input.a == undefined) return;
 		if(input.cmd == null || input.cmd == undefined) return;
+		if(input.args === null || input.args === undefined) return;
 
 		let lib = await tools.fs.load_tools();
 
@@ -76,6 +77,7 @@ app.post(`/${app_conf._prefix}/api`, async function(req, res)
 				// log this incident as fake user
 			}
         }
+
 
 		const addon = {};
 		addon[input.a] = require('./addons/'+input.a+'.js');
