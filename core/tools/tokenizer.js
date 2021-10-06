@@ -36,10 +36,10 @@ exports.tokenizer =
         if(callback) return callback(resp);
         return resp;
     },
-    change_token: async (data, token, callback = null)=>
+    change_token: async (data, old_token, new_token, callback = null)=>
 	{
-		let new_token = serve_conf.update_session_token(token);
-		let resp = await data.mysql.query(`UPDATE users_login SET token = '${new_token}' WHERE token = '${token}'`, 
+		// let new_token = serve_conf.update_session_token(token);
+		let resp = await data.mysql.query(`UPDATE users_login SET token = '${new_token}' WHERE token = '${old_token}'`, 
 		(resp)=>
 		{
 			if(callback)

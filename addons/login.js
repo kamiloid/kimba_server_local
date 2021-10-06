@@ -1,18 +1,24 @@
 const {app_conf, db_conf, serve_conf} = require('../core/conf/conf.js');
 const {tools} = require('../core/conf/tools.js');
+const {Session, Session_manager} = require('../core/conf/session.js');
 
 exports.login =
 {
 	logout: async function(data)
 	{
 		data.o['logged'] = false;
-		const db_session = await data.mysql.query(`SELECT uid, token FROM users_login WHERE ip = '${data.client.ip}' AND browser = '${data.client.browser}' AND status = '1' ORDER BY date_time DESC LIMIT 1`);
-		if(db_session.result.length > 0)
+		const session_temp = Session_manager.get_token(data.i.token);
+		if(session_temp)
 		{
-			let resp = await data.mysql.query(`UPDATE users_login SET status = '0', out_date = '${tools.date.date_time_read()}' WHERE uid = '${db_session.result[0].uid}';`);
-			serve_conf.remove_session(db_session.result[0].token);
+			const resp = await data.lib.db_queries.logout(data, session_temp._id, tools.date.date_time_read());
+			Session_manager.delete_session(session_temp._id);
 		}
-		serve_conf.remove_session(data.i.token);
+		const db_session = await data.lib.db_queries.get_db_session_by_ip_browser(data);
+		if(db_session.length > 0)
+		{
+			const resp = await data.lib.db_queries.logout(data, db_session[0].uid, tools.date.date_time_read());
+			Session_manager.delete_session(db_session[0].uid);
+		}
 		data.o.session = {};
 		return data.callback(data.o);
 	},
@@ -20,24 +26,24 @@ exports.login =
 	{
 		data.o['logged'] = false;
 		// 1. get a opened session in server
-		let session = serve_conf.check_session_by_ip_browser(data.client.ip, data.client.browser);
+		// let session = serve_conf.check_session_by_ip_browser(data.client.ip, data.client.browser);
+		let session = Session_manager.get_ip_browser(data.client.ip, data.client.browser);
 		// 2. check if the opened session exist
 		// 2.1. if it does not exist, then we have to consult if the session is opened in the db
 		//console.log('session: ', session);
 		if(!session)
 		{
-			let resp = await data.lib.db_queries.get_db_session_by_ip_browser(data);
+			const session_local_resp = await data.lib.db_queries.get_db_session_by_ip_browser(data);
 
-			if(resp.result.length == 0)
+			if(session_local_resp.length == 0)
 			{
 				data.o.message = 'User is not logged currently.';
 				return data.callback(data.o);
 			}
-			// console.log(resp);
-			let result = resp.result[0];
+			const session_local = session_local_resp[0];
 			// 2.3 if the session exist, we have to know if this one is opened currently
-			let today = tools.date.now();
-			let expire = tools.date.date(result.expire_date);
+			const today = tools.date.now();
+			const expire = tools.date.date(session_local.expire_date);
 			// 2.4 if the session is not opened, return logged as false
 			if(today.getTime() > expire.getTime())
 			{
@@ -49,94 +55,89 @@ exports.login =
 				
 			// 2.5 if the session exists and is opened, we have to consult in the db the basic data of the user
 			// 'token', 'expire_date', 'user_uid'
-			let resp2 = await data.lib.db_queries.get_db_user_data(data, result.user_uid);
-			if(resp2.result.length == 0)
+			let user_data_resp = await data.lib.db_queries.get_db_user_data(data, session_local.user_uid);
+			if(user_data_resp.result.length == 0)
 			{
 				data.o.message = 'User does not exist or is banned.';
 				return data.callback(data.o);
 			}
-			let result2 = resp2.result[0];
-			// 2.6 if the session exists and is opened, returns logged as true
-			data.o.session['token'] = result.token;
-			data.o.session['user_name'] = result2.user_name;
-			data.o.session['first_name'] = result2.first_name;
-			data.o.session['last_name'] = result2.last_name;
-			data.o.session['email'] = result2.email;
-			data.o.session['plan'] = result2.plan || 0;
 
-			serve_conf.set_session({
-				token: data.o.session['token'],
-				user_uid: result.user_uid,
-				expire: result.expire_date,
-				user_name: data.o.session['user_name'],
-				first_name: data.o.session['first_name'],
-				last_name: data.o.session['last_name'],
-				email: data.o.session['email'],
+			const scopes_resp = await data.lib.db_queries.get_db_user_scope(data, session_local.user_uid);
+			const scopes = scopes_resp[0];
+
+			let user_data = user_data_resp.result[0];
+			// 2.6 if the session exists and is opened, returns logged as true
+			session = Session_manager.new_session(session_local.uid, {
+				id: session_local.uid,
+				token: session_local.token,
+				user_uid: session_local.user_uid,
+				expire: session_local.expire_date,
+				user_name: user_data.user_name,
+				first_name: user_data.first_name,
+				last_name: user_data.last_name,
+				email: user_data.email,
 				ip: data.client.ip,
 				browser: data.client.browser,
-				plan: data.o.session['plan']
-			}, result.token);
+				plan: user_data.plan || 0,
+				scope: scopes.name,
+				uid_scope: scopes.uid_scope
+			});
+			data.o.session = session.export();
 			data.o.logged = true;
 			return data.callback(data.o);
 		}else{
 			// 3. if the session exist
 			// 3.1 we have to compare the new token with the old token
 			data.o.logged = false;
-			let old_token = session.token;
+			let old_token = session._token;
 			if(old_token !== data.i.token && (data.i.token !== null && data.i.token !== undefined))
 			{
-				serve_conf.remove_session(old_token);
-				serve_conf.remove_session(data.i.token);
+				Session_manager.delete_session(session._id);
 				data.o.message = 'Tokens do not match.';
 				return data.callback(data.o);
 			}
 			// 3.2 we have to compare the expiring date
 			let today = tools.date.now();
-			let expire = session.expire;
+			let expire = session._expire;
 			if(today.getTime() > expire.getTime())
 			{
-				serve_conf.remove_session(old_token);
-				serve_conf.remove_session(data.i.token);
+				Session_manager.delete_session(session._id);
 				data.o.message = 'The session is expired.';
 				return data.callback(data.o);
 			}
 			// 3.3 we have to change the token
-			data.lib.tokenizer.change_token(data, old_token, (resp)=>
-			{
-				data.o.session['token'] = resp;
-				data.o.session['user_name'] = session.user_name;
-				data.o.session['first_name'] = session.first_name;
-				data.o.session['last_name'] = session.last_name;
-				data.o.session['email'] = session.email;
-				data.o.session['plan'] = session.plan;
-				data.o.logged = true;
+			const new_token = Session_manager.update_token(session._id);
+			data.o.session = session.export();
+			
+			data.o.logged = true;
 
-				return data.callback(data.o);
-			});
+			return data.callback(data.o);
 		}
 	},
 	try: async (data)=>
 	{
-		let resp = await data.mysql.query(`SELECT uid, status, id, first_name, last_name, email, plan FROM users WHERE user_name = '${data.i.username}' AND pass = '${data.i.pass}' LIMIT 1;`)
+		let resp = await data.lib.db_queries.get_username_pass(data, data.i.username, data.i.pass);
 		
-		if(resp.result.length == 0)
+		if(resp.length == 0)
 		{
 			data.o.error = true;
 			data.o.message = 'User does not exist or is banned.';
 			return data.callback(data.o);
 		}
 		
-		let resp2 = await data.mysql.query(`SELECT token, expire_date FROM users_login WHERE ip = '${data.client.ip}' AND browser = '${data.client.browser}' AND user_uid = '${resp.result[0].uid}' AND status = '1' LIMIT 1;`);
+		// let resp2 = await data.mysql.query(`SELECT token, expire_date FROM users_login WHERE ip = '${data.client.ip}' AND browser = '${data.client.browser}' AND user_uid = '${resp[0].uid}' AND status = '1' LIMIT 1;`);
+		const resp2 = await data.lib.db_queries.get_db_user_login(data, data.client.ip, data.client.browser, resp[0].uid);
+		const resp3 = await data.lib.db_queries.get_db_user_scope(data, resp[0].uid);
 		
 		let create_session = true;
 		let token = '';
 		let now = tools.date.now();
 		let expire_date = tools.date.add_days(now, app_conf._expire_date_days);
-		if(resp2.result.length >= 1)
+		if(resp2.length >= 1)
 		{
 			create_session = false;
-			token = resp2.result[0].token;
-			let expire_date = tools.date.date(resp2.result[0].expire_date);
+			token = resp2[0].token;
+			let expire_date = tools.date.date(resp2[0].expire_date);
 			if(tools.date.now().getTime() > expire_date)
 				create_session = true;
 		}
@@ -146,30 +147,27 @@ exports.login =
 			token = tools.uid();
 			let today_date_time = tools.date.date_time_read(now);
 			let expire_date_time = tools.date.date_time_read(expire_date);
-			await data.mysql.query(`INSERT INTO users_login (uid, user_uid, date_time, ip, expire_date, browser, token) VALUES ('${session_uid}', '${resp.result[0].uid}', '${today_date_time}', '${data.client.ip}', '${expire_date_time}', '${data.client.browser}', '${token}')`, (resp3)=>{});
+			await data.lib.db_queries.set_db_user_login(data, session_uid, resp[0].uid, today_date_time, data.client.ip, expire_date_time, data.client.browser, token);
+			// await data.mysql.query(`INSERT INTO users_login (uid, user_uid, date_time, ip, expire_date, browser, token) VALUES ('${session_uid}', '${resp.result[0].uid}', '${today_date_time}', '${data.client.ip}', '${expire_date_time}', '${data.client.browser}', '${token}')`, (resp3)=>{});
 		}
 
-		serve_conf.set_session({
+		const session = Session_manager.new_session(resp2.uid, {
+			id: resp2.uid,
 			token: token,
-			user_uid: resp.result[0].uid,
+			user_uid: resp[0].uid,
 			expire: expire_date,
 			user_name: data.i.username,
-			first_name: resp.result[0].first_name,
-			last_name: resp.result[0].last_name,
-			email: resp.result[0].email,
+			first_name: resp[0].first_name,
+			last_name: resp[0].last_name,
+			email: resp[0].email,
 			ip: data.client.ip,
 			browser: data.client.browser,
-			plan: resp.result[0].plan
-		}, token);
+			plan: resp[0].plan,
+			scope: resp3[0].name,
+			uid_scope: resp3[0].uid
+		});
 		
-		data.o.session = {
-			token: token,
-			user_name: data.i.username,
-			first_name: resp.result[0].first_name,
-			last_name: resp.result[0].last_name,
-			email: resp.result[0].email,
-			plan: resp.result[0].plan
-		}
+		data.o.session = session.export();
 		return data.callback(data.o);
 	},
 	signin: async (data)=>
